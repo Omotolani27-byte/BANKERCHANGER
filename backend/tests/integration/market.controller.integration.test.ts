@@ -50,12 +50,19 @@ describe('GET /api/markets', () => {
     (MarketService.getMarkets as jest.Mock).mockResolvedValue({
       markets: [mockMarket],
       total: 1,
+      hasNextPage: true,
     });
 
     const res = await request(app).get('/api/markets');
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ markets: [mockMarket], total: 1, page: 1, limit: 20 });
+    expect(res.body).toMatchObject({
+      markets: [mockMarket],
+      total: 1,
+      hasNextPage: true,
+      page: 1,
+      limit: 20,
+    });
   });
 
   it('filters by status', async () => {

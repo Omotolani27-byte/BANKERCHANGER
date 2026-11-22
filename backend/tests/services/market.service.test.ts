@@ -1,5 +1,6 @@
 import * as MarketServiceModule from '../../src/services/MarketService';
-import { setDbAdapter, getMarkets, getMarketById, getMarketOdds, calculateOutcomeOdds, getPortfolioByAddress, getBetsByMarket, simulateProjectedPayout } from '../../src/services/MarketService';
+import { setDbAdapter, getMarkets, getMarketById, getMarketOdds, calculateOutcomeOdds, getPortfolioByAddress, getBetsByMarket, simulateProjectedPayout, updateMarketStatus } from '../../src/services/MarketService';
+import * as cache from '../../src/services/cache.service';
 import { AppError } from '../../src/utils/AppError';
 import type { Market } from '../../src/models/Market';
 import type { Bet } from '../../src/models/Bet';
@@ -10,6 +11,8 @@ jest.mock('../../src/services/cache.service', () => ({
   set: jest.fn().mockResolvedValue(undefined),
   del: jest.fn().mockResolvedValue(undefined),
   delPattern: jest.fn().mockResolvedValue(undefined),
+  cacheDelete: jest.fn().mockResolvedValue(undefined),
+  cacheDeletePattern: jest.fn().mockResolvedValue(undefined),
 }));
 
 // ── Mock StellarService to avoid SDK compilation errors ──────────────────────
@@ -54,6 +57,7 @@ const MARKET_RESOLVED = makeMarket({ market_id: 'mkt-2', status: 'resolved' });
 // ── Tests ─────────────────────────────────────────────────────────────────────
 describe('MarketService', () => {
   beforeEach(() => {
+    jest.clearAllMocks();
     const dbAdapter = {
       findMarkets: jest.fn().mockResolvedValue([MARKET_OPEN, MARKET_RESOLVED]),
       findMarketById: jest.fn().mockImplementation((id: string) =>
@@ -83,6 +87,86 @@ describe('MarketService', () => {
     const result = await getMarkets({ status: 'open' });
     expect(result.total).toBe(1);
     expect(result.markets[0].status).toBe('open');
+  });
+
+  it('getMarkets() paginates results and reports whether another page exists', async () => {
+    const markets = [
+      makeMarket({ market_id: 'mkt-1', scheduled_at: new Date('2026-06-01T00:00:00Z') }),
+      makeMarket({ market_id: 'mkt-2', scheduled_at: new Date('2026-07-01T00:00:00Z') }),
+      makeMarket({ market_id: 'mkt-3', scheduled_at: new Date('2026-08-01T00:00:00Z') }),
+    ];
+    setDbAdapter({
+      findMarkets: jest.fn().mockResolvedValue(markets),
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+    });
+
+    const secondPage = await getMarkets({}, { page: 2, limit: 1 });
+    expect(secondPage).toMatchObject({
+      markets: [expect.objectContaining({ market_id: 'mkt-2' })],
+      total: 3,
+      hasNextPage: true,
+    });
+
+    const lastPage = await getMarkets({}, { page: 3, limit: 1 });
+    expect(lastPage).toMatchObject({
+      markets: [expect.objectContaining({ market_id: 'mkt-3' })],
+      total: 3,
+      hasNextPage: false,
+    });
+  });
+
+  it('uses the requested list cache key and returns cached results without querying the adapter', async () => {
+    const findMarkets = jest.fn().mockResolvedValue([MARKET_OPEN]);
+    setDbAdapter({
+      findMarkets,
+      findMarketById: jest.fn(),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+    });
+    const cachedResult = { markets: [MARKET_OPEN], total: 1, hasNextPage: false };
+    jest.mocked(cache.get)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(cachedResult);
+
+    const firstResult = await getMarkets(
+      { status: 'open', weight_class: 'heavyweight' },
+      { page: 1, limit: 10 },
+    );
+    const cachedResultFromCall = await getMarkets(
+      { status: 'open', weight_class: 'heavyweight' },
+      { page: 1, limit: 10 },
+    );
+
+    expect(firstResult).toEqual({ markets: [MARKET_OPEN], total: 1, hasNextPage: false });
+    expect(cachedResultFromCall).toEqual(cachedResult);
+    expect(findMarkets).toHaveBeenCalledTimes(1);
+    expect(cache.get).toHaveBeenNthCalledWith(1, 'markets:open:heavyweight:1:10');
+    expect(cache.set).toHaveBeenCalledWith(
+      'markets:open:heavyweight:1:10',
+      firstResult,
+      30,
+    );
+  });
+
+  it('invalidates cached market and market-list entries after a status update', async () => {
+    const updateMarket = jest.fn().mockResolvedValue(undefined);
+    setDbAdapter({
+      findMarkets: jest.fn(),
+      findMarketById: jest.fn().mockResolvedValue(MARKET_OPEN),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: updateMarket,
+    });
+
+    await updateMarketStatus('mkt-1', 'locked');
+
+    expect(updateMarket).toHaveBeenCalledWith('mkt-1', 'locked');
+    expect(cache.cacheDelete).toHaveBeenCalledWith('market:mkt-1');
+    expect(cache.cacheDeletePattern).toHaveBeenCalledWith('markets:*');
   });
 
   // 3 ─────────────────────────────────────────────────────────────────────────
@@ -406,7 +490,7 @@ describe('MarketService', () => {
   });
 
   // 20 ────────────────────────────────────────────────────────────────────────
-  it('getMarkets() sorts by scheduled_at DESC (most recent first)', async () => {
+  it('getMarkets() sorts by scheduled_at ASC (soonest first)', async () => {
     const market1 = makeMarket({ market_id: 'mkt-1', scheduled_at: new Date('2026-06-01T00:00:00Z') });
     const market2 = makeMarket({ market_id: 'mkt-2', scheduled_at: new Date('2026-07-01T00:00:00Z') });
     setDbAdapter({
@@ -417,7 +501,7 @@ describe('MarketService', () => {
       updateMarketStatus: jest.fn(),
     });
     const result = await getMarkets();
-    expect(result.markets[0].market_id).toBe('mkt-2'); // Most recent first
-    expect(result.markets[1].market_id).toBe('mkt-1');
+    expect(result.markets[0].market_id).toBe('mkt-1');
+    expect(result.markets[1].market_id).toBe('mkt-2');
   });
 });
