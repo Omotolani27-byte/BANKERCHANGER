@@ -448,9 +448,7 @@ export async function getMarketById(market_id: string): Promise<MarketWithOdds> 
 /**
  * Returns live odds for a market.
  *
- * Formula: odds_x = floor((total_pool - fee) * 10_000 / pool_side)
- * Uses the net pool (total minus platform fee) to compute the actual payout
- * multiplier each outcome would return per unit staked.
+ * Formula: odds_x = floor(pool_side * 10_000 / total_pool)
  * Falls back to querying the Market contract via StellarService.readContractState()
  * if DB pool sizes are stale (updated_at older than 30 seconds).
  */
@@ -478,18 +476,15 @@ export async function getMarketOdds(market_id: string): Promise<MarketOdds> {
     total_pool = BigInt(market.total_pool);
   }
 
-  // No bets placed yet — return equal implied probabilities (33.33%) instead
-  // of dividing by zero, which would surface as NaN/Infinity → null in JSON.
+  // No bets placed yet — odds are zero rather than an implied split.
   if (total_pool === 0n) {
-    const EQUAL_PROBABILITY_BPS = Math.round(10000 / 3);
-    return { odds_a: EQUAL_PROBABILITY_BPS, odds_b: EQUAL_PROBABILITY_BPS, odds_draw: EQUAL_PROBABILITY_BPS };
+    return { odds_a: 0, odds_b: 0, odds_draw: 0 };
   }
 
-
   return {
-    odds_a: pool_a === 0n ? 0 : Number((pool_a * 10000n) / total_pool),
-    odds_b: pool_b === 0n ? 0 : Number((pool_b * 10000n) / total_pool),
-    odds_draw: pool_draw === 0n ? 0 : Number((pool_draw * 10000n) / total_pool),
+    odds_a: Number((pool_a * 10000n) / total_pool),
+    odds_b: Number((pool_b * 10000n) / total_pool),
+    odds_draw: Number((pool_draw * 10000n) / total_pool),
   };
 }
 
