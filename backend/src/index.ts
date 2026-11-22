@@ -211,7 +211,7 @@ const server = app.listen(PORT, () => {
   logger.info({ results }, "Startup health check complete");
 })();
 
-initActivityFeed(server);
+initActivityFeed(server, redis);
 
 // Bridge engagement leaderboard rank changes onto the WebSocket layer so
 // subscribed clients get real-time rank updates (issues #516, #517).
