@@ -1,5 +1,5 @@
 import * as MarketServiceModule from '../../src/services/MarketService';
-import { setDbAdapter, getMarkets, getMarketById, getMarketOdds, getPortfolioByAddress, getBetsByMarket, simulateProjectedPayout } from '../../src/services/MarketService';
+import { setDbAdapter, getMarkets, getMarketById, getMarketOdds, calculateOutcomeOdds, getPortfolioByAddress, getBetsByMarket, simulateProjectedPayout } from '../../src/services/MarketService';
 import { AppError } from '../../src/utils/AppError';
 import type { Market } from '../../src/models/Market';
 import type { Bet } from '../../src/models/Bet';
@@ -97,6 +97,27 @@ describe('MarketService', () => {
   it('getMarketOdds() returns equal implied probabilities (33.33%) for empty pools', async () => {
     const odds = await getMarketOdds('mkt-1'); // pool totals are all '0'
     expect(odds).toEqual({ odds_a: 3333, odds_b: 3333, odds_draw: 3333 });
+  });
+
+  it('calculateOutcomeOdds() returns zero odds when every pool is empty', async () => {
+    const odds = await calculateOutcomeOdds('mkt-1');
+
+    expect(odds.total_pool).toBe('0');
+    expect(odds.fighter_a).toMatchObject({ multiplier: 0, implied_probability: 0, pool: '0' });
+    expect(odds.fighter_b).toMatchObject({ multiplier: 0, implied_probability: 0, pool: '0' });
+    expect(odds.draw).toMatchObject({ multiplier: 0, implied_probability: 0, pool: '0' });
+  });
+
+  it('calculateOutcomeOdds() returns 404 for an unknown market', async () => {
+    setDbAdapter({
+      findMarkets: jest.fn(),
+      findMarketById: jest.fn().mockResolvedValue(null),
+      findBetsByAddress: jest.fn(),
+      findBetsByMarket: jest.fn(),
+      updateMarketStatus: jest.fn(),
+    });
+
+    await expect(calculateOutcomeOdds('unknown')).rejects.toMatchObject({ statusCode: 404 });
   });
 
   // 5 ─────────────────────────────────────────────────────────────────────────
